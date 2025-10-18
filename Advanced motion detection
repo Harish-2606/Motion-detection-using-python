@@ -1,0 +1,499 @@
+import pygame
+import cv2
+import numpy as np
+import sys
+import datetime
+import os
+import pygame.mixer
+from pygame import mixer
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+
+# Initialize Pygame and mixer
+pygame.init()
+mixer.init()
+
+# Set up display
+WIDTH, HEIGHT = 1000, 700
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+pygame.display.set_caption("Advanced Motion Detection System")
+
+# Set up webcam
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Could not open webcam")
+    pygame.quit()
+    sys.exit()
+
+# Create directories for saving files
+if not os.path.exists("motion_captures"):
+    os.makedirs("motion_captures")
+if not os.path.exists("motion_videos"):
+    os.makedirs("motion_videos")
+
+# Font setup
+font_large = pygame.font.SysFont('Arial', 32)
+font_medium = pygame.font.SysFont('Arial', 24)
+font_small = pygame.font.SysFont('Arial', 18)
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+PURPLE = (75, 0, 130)
+
+# Motion detection variables
+prev_frame = None
+motion_detected = False
+motion_counter = 0
+motion_start_time = None
+total_motion_events = 0
+motion_duration = 0
+recording = False
+video_writer = None
+sensitivity = 500
+sound_enabled = True
+
+# Mailtrap Configuration - UPDATE THESE WITH YOUR CREDENTIALS
+EMAIL_ENABLED = True
+SMTP_SERVER = "sandbox.smtp.mailtrap.io"
+SMTP_PORT = 2525
+MAILTRAP_USERNAME = "dd0b6d4b597452"  # REPLACE WITH YOUR MAILTRAP USERNAME
+MAILTRAP_PASSWORD = "0bdc63d7c791c5"  # REPLACE WITH YOUR MAILTRAP PASSWORD
+SENDER_EMAIL = "kamaleshkamalesh1457@gmail.com"  # Can be any email
+RECIPIENT_EMAIL = "kamaleshkamalesh1457@gmail.com"
+email_cooldown = False
+
+# Sound effects
+try:
+    alert_sound = mixer.Sound('alert.wav')  # Add your sound file
+    print("Sound file loaded successfully")
+except:
+    print("Warning: Could not load sound file. Continuing without sound.")
+    sound_enabled = False
+
+# Button class for UI
+class Button:
+    def __init__(self, x, y, width, height, text, color, hover_color, action=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.color = color
+        self.hover_color = hover_color
+        self.action = action
+        self.is_hovered = False
+        
+    def draw(self, surface):
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(surface, color, self.rect, border_radius=8)
+        pygame.draw.rect(surface, WHITE, self.rect, 2, border_radius=8)
+        
+        text_surf = font_small.render(self.text, True, WHITE)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        surface.blit(text_surf, text_rect)
+        
+    def check_hover(self, pos):
+        self.is_hovered = self.rect.collidepoint(pos)
+        
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos) and self.action:
+                return self.action()
+        return False
+
+def toggle_sound():
+    global sound_enabled
+    sound_enabled = not sound_enabled
+    status = "ON" if sound_enabled else "OFF"
+    print(f"🔊 Sound {status}")
+
+def send_email_alert(frame=None, motion_regions=None, motion_duration=0):
+    """Send email alert via Mailtrap"""
+    
+    if not EMAIL_ENABLED:
+        print("📧 Email alerts are disabled")
+        return False
+    
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Create email WITHOUT emojis to avoid encoding issues
+        subject = "ALERT: Motion Detected - Security Alert"  # Removed emoji
+        body = f"""
+        MOTION DETECTION ALERT
+        
+        Time: {timestamp}
+        Motion Duration: {motion_duration:.2f} seconds
+        Motion Areas Detected: {len(motion_regions) if motion_regions else 0}
+        Total Motion Events: {total_motion_events}
+        
+        This is a test alert from your Motion Detection System.
+        Check your Mailtrap inbox to see this email!
+        """
+        
+        # Use MIME to handle encoding properly
+        msg = MIMEMultipart()
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECIPIENT_EMAIL
+        msg['Subject'] = subject
+        
+        # Attach the body with proper encoding
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        # Connect to Mailtrap
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(MAILTRAP_USERNAME, MAILTRAP_PASSWORD)
+            server.send_message(msg)  # Use send_message instead of sendmail
+        
+        print("✅ Email sent to Mailtrap! Check your Mailtrap inbox.")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Email failed: {str(e)}")
+        print("💡 Make sure you've updated MAILTRAP_USERNAME and MAILTRAP_PASSWORD with your actual credentials")
+        return False
+
+def test_mailtrap_connection():
+    """Test if Mailtrap credentials are working"""
+    print("\n🔧 Testing Mailtrap connection...")
+    
+    if MAILTRAP_USERNAME == "your_mailtrap_username" or MAILTRAP_PASSWORD == "your_mailtrap_password":
+        print("❌ Please update MAILTRAP_USERNAME and MAILTRAP_PASSWORD with your actual Mailtrap credentials")
+        print("   Get them from: https://mailtrap.io/ -> Inbox -> SMTP Settings")
+        return False
+    
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(MAILTRAP_USERNAME, MAILTRAP_PASSWORD)
+            print("✅ Mailtrap connection successful!")
+            return True
+    except Exception as e:
+        print(f"❌ Mailtrap connection failed: {e}")
+        print("💡 Check your credentials at: https://mailtrap.io/")
+        return False
+
+# Test connection at startup
+test_mailtrap_connection()
+
+# Create buttons
+buttons = [
+    Button(810, 150, 170, 40, "Take Snapshot", BLUE, (0, 100, 255), lambda: "snapshot"),
+    Button(810, 200, 170, 40, "Reset Stats", (128, 0, 128), (100, 0, 200), lambda: "reset"),
+    Button(810, 250, 170, 40, "More Sensitive", GREEN, (0, 200, 0), lambda: "more_sensitive"),
+    Button(810, 300, 170, 40, "Less Sensitive", RED, (200, 0, 0), lambda: "less_sensitive"),
+    Button(810, 350, 170, 40, "Toggle Recording", YELLOW, (200, 200, 0), lambda: "toggle_record"),
+    Button(810, 400, 170, 40, "Sound On/Off", (255, 165, 0), (255, 140, 0), lambda: "toggle_sound"),
+    Button(810, 450, 170, 40, "Test Email", PURPLE, (100, 0, 180), lambda: "test_email")
+]
+
+def cv2_to_pygame(frame):
+    """Convert OpenCV frame to PyGame surface"""
+    # Convert BGR to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    # Rotate and flip if needed (depends on your camera)
+    frame_rgb = np.rot90(frame_rgb)
+    frame_rgb = pygame.surfarray.make_surface(frame_rgb)
+    return frame_rgb
+
+def detect_motion(frame):
+    """Detect motion in the frame with enhanced features"""
+    global prev_frame, motion_detected, motion_counter, sensitivity
+    
+    # Convert to grayscale and blur
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+    
+    if prev_frame is None:
+        prev_frame = gray
+        return False, None, []
+    
+    # Compute absolute difference between current and previous frame
+    frame_delta = cv2.absdiff(prev_frame, gray)
+    thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+    
+    # Dilate the thresholded image to fill in holes
+    thresh = cv2.dilate(thresh, None, iterations=2)
+    
+    # Find contours on thresholded image
+    contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    motion_detected = False
+    motion_frame = frame.copy()
+    motion_regions = []
+    
+    for contour in contours:
+        if cv2.contourArea(contour) < sensitivity:
+            continue
+            
+        motion_detected = True
+        (x, y, w, h) = cv2.boundingRect(contour)
+        motion_regions.append((x, y, w, h))
+        
+        # Draw rectangle around moving object
+        cv2.rectangle(motion_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        
+        # Draw center point
+        center_x, center_y = x + w//2, y + h//2
+        cv2.circle(motion_frame, (center_x, center_y), 5, (255, 0, 0), -1)
+        
+        # Add motion intensity text
+        area = cv2.contourArea(contour)
+        intensity = min(100, int(area / 50))
+        cv2.putText(motion_frame, f"{intensity}%", (x, y-10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    
+    prev_frame = gray
+    
+    # Update motion counter with persistence
+    if motion_detected:
+        motion_counter += 1
+    else:
+        motion_counter = max(0, motion_counter - 1)
+    
+    return motion_detected or motion_counter > 5, motion_frame, motion_regions
+
+def save_snapshot(frame):
+    """Save current frame as image with timestamp"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"motion_captures/snapshot_{timestamp}.jpg"
+    cv2.imwrite(filename, frame)
+    print(f"📸 Snapshot saved: {filename}")
+    return filename
+
+def start_recording():
+    """Start recording video"""
+    global recording, video_writer
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"motion_videos/recording_{timestamp}.avi"
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    video_writer = cv2.VideoWriter(filename, fourcc, 20.0, (WIDTH, HEIGHT))
+    recording = True
+    print(f"🎥 Recording started: {filename}")
+    return filename
+
+def stop_recording():
+    """Stop recording video"""
+    global recording, video_writer
+    if video_writer:
+        video_writer.release()
+        video_writer = None
+    recording = False
+    print("⏹️ Recording stopped")
+
+def draw_ui():
+    """Draw the enhanced user interface"""
+    # Draw sidebar background
+    pygame.draw.rect(screen, (40, 40, 40), (800, 0, 200, HEIGHT))
+    
+    # Draw title
+    title = font_large.render("MOTION DETECTOR", True, WHITE)
+    screen.blit(title, (810, 20))
+    
+    # Draw status
+    status_text = "ACTIVE MOTION!" if motion_detected else "No Motion"
+    status_color = RED if motion_detected else GREEN
+    status = font_medium.render(f"Status: {status_text}", True, status_color)
+    screen.blit(status, (810, 80))
+    
+    # Draw statistics panel
+    stats_y = 500
+    pygame.draw.rect(screen, (60, 60, 60), (805, stats_y, 190, 200), border_radius=8)
+    
+    stats_title = font_medium.render("Statistics", True, WHITE)
+    screen.blit(stats_title, (810, stats_y + 10))
+    
+    stats = [
+        f"Motion Events: {total_motion_events}",
+        f"Current Duration: {motion_duration:.1f}s",
+        f"Sensitivity: {sensitivity}",
+        f"Recording: {'ON' if recording else 'OFF'}",
+        f"Sound: {'ON' if sound_enabled else 'OFF'}",
+        f"Email: {'ON' if EMAIL_ENABLED else 'OFF'}",
+        f"Email Cooldown: {'ACTIVE' if email_cooldown else 'READY'}"
+    ]
+    
+    for i, stat in enumerate(stats):
+        stat_text = font_small.render(stat, True, WHITE)
+        screen.blit(stat_text, (815, stats_y + 50 + i * 25))
+
+# Main game loop
+clock = pygame.time.Clock()
+running = True
+last_motion_time = None
+
+print("🚀 Enhanced Motion Detection System Started!")
+print("============================================")
+print("Features:")
+print("- Real-time motion detection with visual feedback")
+print("- Take snapshots and record video")
+print("- Adjustable sensitivity")
+print("- Sound alerts")
+print("- Email alerts (via Mailtrap)")
+print("- Motion statistics and logging")
+print("============================================")
+
+while running:
+    mouse_pos = pygame.mouse.get_pos()
+    
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+            elif event.key == pygame.K_s:
+                save_snapshot(frame)
+            elif event.key == pygame.K_r:
+                if recording:
+                    stop_recording()
+                else:
+                    start_recording()
+            elif event.key == pygame.K_f:  # Fullscreen toggle
+                if screen.get_flags() & pygame.FULLSCREEN:
+                    screen = pygame.display.set_mode((1000, 700), pygame.RESIZABLE)
+                else:
+                    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        
+        # Handle button events
+        for button in buttons:
+            result = button.handle_event(event)
+            if result == "snapshot":
+                save_snapshot(frame)
+            elif result == "reset":
+                total_motion_events = 0
+                motion_duration = 0
+                print("📊 Statistics reset")
+            elif result == "more_sensitive":
+                sensitivity = max(50, sensitivity - 100)
+                print(f"🎯 Sensitivity increased: {sensitivity}")
+            elif result == "less_sensitive":
+                sensitivity = min(2000, sensitivity + 100)
+                print(f"🎯 Sensitivity decreased: {sensitivity}")
+            elif result == "toggle_record":
+                if recording:
+                    stop_recording()
+                else:
+                    start_recording()
+            elif result == "toggle_sound":
+                toggle_sound()
+            elif result == "test_email":
+                test_success = send_email_alert(frame=frame, motion_regions=[], motion_duration=0)
+                if test_success:
+                    print("✅ Test email sent successfully!")
+                else:
+                    print("❌ Test email failed - check configuration")
+    
+    # Update button hover states
+    for button in buttons:
+        button.check_hover(mouse_pos)
+    
+    # Capture frame from webcam
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Failed to capture frame")
+        break
+    
+    # Resize frame
+    frame = cv2.resize(frame, (WIDTH, HEIGHT))
+    
+    # Detect motion
+    motion_status, processed_frame, motion_regions = detect_motion(frame)
+    
+    # Handle motion events
+    current_time = datetime.datetime.now()
+    
+    if motion_status and not motion_detected:
+        # Motion started
+        motion_detected = True
+        motion_start_time = current_time
+        total_motion_events += 1
+        
+        # Play alert sound
+        if sound_enabled:
+            try:
+                alert_sound.play()
+            except:
+                pass
+        
+        # Auto-save snapshot on significant motion
+        if len(motion_regions) > 0 and any(w*h > 10000 for x,y,w,h in motion_regions):
+            save_snapshot(processed_frame)
+            
+        # Send email alert (with cooldown)
+        if not email_cooldown and EMAIL_ENABLED:
+            email_sent = send_email_alert(
+                frame=processed_frame,
+                motion_regions=motion_regions,
+                motion_duration=0
+            )
+            if email_sent:
+                email_cooldown = True
+                # Reset cooldown after 5 minutes
+                pygame.time.set_timer(pygame.USEREVENT, 300000)
+        
+        print(f"🚨 Motion detected! Event #{total_motion_events}")
+        
+    elif not motion_status and motion_detected:
+        # Motion ended
+        motion_detected = False
+        if motion_start_time:
+            duration = (current_time - motion_start_time).total_seconds()
+            motion_duration = duration
+            print(f"✅ Motion ended. Duration: {duration:.2f} seconds")
+    
+    # Update current motion duration
+    if motion_detected and motion_start_time:
+        motion_duration = (current_time - motion_start_time).total_seconds()
+    
+    # Record video if enabled
+    if recording and video_writer:
+        video_writer.write(frame)
+    
+    # Handle email cooldown reset
+    for event in pygame.event.get(pygame.USEREVENT):
+        email_cooldown = False
+        print("📧 Email cooldown reset - ready for new alerts")
+    
+    # Convert to PyGame surface
+    if processed_frame is not None:
+        cam_surface = cv2_to_pygame(processed_frame)
+    else:
+        cam_surface = cv2_to_pygame(frame)
+    
+    # Display the webcam feed
+    screen.fill(BLACK)
+    screen.blit(cam_surface, (0, 0))
+    
+    # Draw UI elements
+    draw_ui()
+    
+    # Draw buttons
+    for button in buttons:
+        button.draw(screen)
+    
+    # Display timestamp
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    time_text = font_small.render(timestamp, True, WHITE)
+    screen.blit(time_text, (10, HEIGHT - 25))
+    
+    # Display motion regions count
+    regions_text = font_small.render(f"Motion Areas: {len(motion_regions)}", True, WHITE)
+    screen.blit(regions_text, (10, 10))
+    
+    # Update display
+    pygame.display.flip()
+    clock.tick(30)
+
+# Clean up
+if recording:
+    stop_recording()
+cap.release()
+pygame.quit()
+sys.exit()
